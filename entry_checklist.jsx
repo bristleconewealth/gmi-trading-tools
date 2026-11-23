@@ -80,6 +80,7 @@ export default function EntryChecklist() {
   const [atcDay, setAtcDay]           = useState("");
   const [macro, setMacro]             = useState(MACRO_DEFAULT);
   const [ghToken, setGhToken]         = useState(() => sessionStorage.getItem("gh_token") || "");
+  const [fhKey, setFhKey]             = useState(() => sessionStorage.getItem("finnhub_key") || "");
   const [saveStatus, setSaveStatus]   = useState("");
   const [saving, setSaving]           = useState(false);
   const [notes, setNotes]             = useState("");
@@ -98,34 +99,26 @@ export default function EntryChecklist() {
     if (sym && APC_DEFAULTS[sym]) setApc(String(APC_DEFAULTS[sym]));
   }, [sym]);
 
-  // Live price from Yahoo Finance public endpoint
+  // Live price from Finnhub (Yahoo blocks requests from browsers)
   const fetchPrice = async () => {
     if (!sym) return;
+    if (!fhKey) { setPriceError("Paste your Finnhub API key below the price box"); return; }
     setPriceLoading(true);
     setPriceError("");
     setCurrentPrice(null);
     try {
-      const res = await fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&range=1d`);
+      const res = await fetch(`https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(sym)}&token=${encodeURIComponent(fhKey)}`);
+      if (res.status === 401 || res.status === 403) throw new Error("Finnhub rejected the key — check it");
+      if (res.status === 429) throw new Error("Finnhub rate limit — wait a minute");
+      if (!res.ok) throw new Error(`Finnhub error ${res.status}`);
       const data = await res.json();
-      const price = data?.chart?.result?.[0]?.meta?.regularMarketPrice;
-      if (price) {
-        const p = parseFloat(price.toFixed(2));
-        setCurrentPrice(p);
-        if (!e1Price) setE1Price(p.toFixed(2));
-      } else throw new Error("no price");
-    } catch {
-      try {
-        const res2 = await fetch(`https://query2.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&range=1d`);
-        const data2 = await res2.json();
-        const price2 = data2?.chart?.result?.[0]?.meta?.regularMarketPrice;
-        if (price2) {
-          const p = parseFloat(price2.toFixed(2));
-          setCurrentPrice(p);
-          if (!e1Price) setE1Price(p.toFixed(2));
-        } else throw new Error("no price");
-      } catch {
-        setPriceError("Could not fetch — enter price manually");
-      }
+      const price = data?.c;
+      if (!price) throw new Error(`No price for ${sym} — enter manually`);
+      const p = parseFloat(price.toFixed(2));
+      setCurrentPrice(p);
+      if (!e1Price) setE1Price(p.toFixed(2));
+    } catch (err) {
+      setPriceError(err?.message?.startsWith("Finnhub") || err?.message?.startsWith("No price") ? err.message : "Could not fetch — enter price manually");
     }
     setPriceLoading(false);
   };
@@ -156,23 +149,35 @@ export default function EntryChecklist() {
     if (!ghToken||!sym||!e1Val||!sharesVal) { setSaveStatus("Fill in ticker, E1 price, and shares."); return; }
     setSaving(true); setSaveStatus("Loading config...");
     const REPO="bristleconewealth/gmi-morning-brief", FILE="config.json";
+    const ghError = async (res, step) => {
+      let msg = "";
+      try { msg = (await res.json())?.message || ""; } catch {}
+      if (res.status === 401) return `❌ ${step}: GitHub rejected the token (expired or mistyped).`;
+      if (res.status === 403 || res.status === 404) return `❌ ${step}: token can't access ${REPO} — it needs Contents read & write.`;
+      if (res.status === 409 || res.status === 422) return `❌ ${step}: config changed on GitHub at the same time — click Log again.`;
+      return `❌ ${step} failed (GitHub ${res.status}${msg ? ": " + msg : ""}).`;
+    };
     try {
-      const res = await fetch(`https://api.github.com/repos/${REPO}/contents/${FILE}`,{headers:{"Authorization":`token ${ghToken}`}});
+      const res = await fetch(`https://api.github.com/repos/${REPO}/contents/${FILE}`,{headers:{"Authorization":`token ${ghToken}`},cache:"no-store"});
+      if (!res.ok) { setSaveStatus(await ghError(res, "Loading config")); setSaving(false); return; }
       const data = await res.json();
-      const cfg = JSON.parse(atob(data.content));
+      const cfg = JSON.parse(decodeURIComponent(escape(atob(data.content.replace(/\n/g,"")))));
       const existing = cfg.positions?.find(p=>p.symbol===sym);
       if (existing) {
-        const n=(existing.lots?.length||0)+1;
+        existing.lots = existing.lots || [];
+        const n=existing.lots.length+1;
         existing.lots.push({lot:n,shares:sharesVal,entry_price:e1Val,entry_date:entryDate});
       } else {
         cfg.positions=cfg.positions||[];
         cfg.positions.push({symbol:sym,entry_date:entryDate,lots:[{lot:1,shares:sharesVal,entry_price:e1Val,entry_date:entryDate}],apc_pct:apcVal,atc_days:53,notes:notes||`E1 entry. ${pattern}`.trim()});
       }
+      setSaveStatus("Saving...");
       const content=btoa(unescape(encodeURIComponent(JSON.stringify(cfg,null,2))));
-      await fetch(`https://api.github.com/repos/${REPO}/contents/${FILE}`,{method:"PUT",headers:{"Authorization":`token ${ghToken}`,"Content-Type":"application/json"},body:JSON.stringify({message:`Entry: ${sym} @ $${e1Val}`,content,sha:data.sha})});
+      const put = await fetch(`https://api.github.com/repos/${REPO}/contents/${FILE}`,{method:"PUT",headers:{"Authorization":`token ${ghToken}`,"Content-Type":"application/json"},body:JSON.stringify({message:`Entry: ${sym} @ $${e1Val}`,content,sha:data.sha})});
+      if (!put.ok) { setSaveStatus(await ghError(put, "Saving")); setSaving(false); return; }
       setSaveStatus(`✅ ${sym} logged! Morning email updates tonight.`);
       sessionStorage.setItem("gh_token",ghToken);
-    } catch { setSaveStatus("❌ Save failed. Check token."); }
+    } catch { setSaveStatus("❌ Save failed — couldn't reach GitHub. Check your connection."); }
     setSaving(false);
   };
 
@@ -241,6 +246,10 @@ export default function EntryChecklist() {
                     <span style={{ fontSize:12, color:priceError?"#ef4444":"#334155", fontFamily:"monospace" }}>{priceError||"Enter ticker → click Get Price"}</span>
                   )}
                 </div>
+              </div>
+              <div style={{ marginTop:10 }}>
+                <label style={lbl}>FINNHUB API KEY</label>
+                <input type="password" value={fhKey} onChange={e=>{setFhKey(e.target.value.trim());sessionStorage.setItem("finnhub_key",e.target.value.trim());}} placeholder="Paste once per session" style={inp({fontSize:12})} />
               </div>
             </div>
 

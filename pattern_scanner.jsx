@@ -565,105 +565,60 @@ export default function PatternScanner() {
   const [lastScan, setLastScan] = useState(null);
   const [selectedSectors, setSelectedSectors] = useState(new Set());
   const [macro, setMacro] = useState({ season: "Spring", lateCount: 0, globalLiquidity: "Rising", ism: 51.2 });
-  const abortRef = useRef(false);
 
-  const analyzeBatch = async (tickers) => {
-    const prompt = `You are a technical analysis engine scanning for chart patterns as of early March 2026.
+  const [scanData, setScanData] = useState(null);
+  const [ghToken, setGhToken] = useState(() => { try { return sessionStorage.getItem("gh_token") || ""; } catch { return ""; } });
 
-For each ticker, determine if it shows a Bull Pullback or Double Bottom on the daily chart based on recent price action.
-
-Return ONLY a JSON array with exactly ${tickers.length} elements (null for no clear pattern). Use this format:
-[
-  {
-    "ticker": "AAPL",
-    "pattern": "Bull Pullback",
-    "label": "Pullback to 50MA",
-    "score": 72,
-    "price": 185.50,
-    "details": "12% off highs • Near 50MA • Low vol pullback",
-    "pullbackPct": "12.0",
-    "ma_touch": "50 MA"
-  }
-]
-
-For Double Bottom add: "diff" (% between lows, e.g. "1.8"), "bounce" (% bounce, e.g. "4.2"), "aboveNeck" (true/false).
-
-Rules:
-- Only flag genuine, high-quality setups. Be selective.
-- score range 40-95. Only include if score >= 45.
-- Use null for stocks with no clear pattern or ones you're uncertain about.
-- Bull Pullback: stock must be in clear uptrend (above key MAs), pulled back 5-30% to MA support.
-- Double Bottom: two distinct lows within 3% of each other, bouncing off second.
-
-Tickers: ${tickers.join(", ")}`;
-
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 2000,
-        messages: [{ role: "user", content: prompt }]
-      })
-    });
-    const data = await res.json();
-    const raw = (data.content?.find(b => b.type === "text")?.text || "")
-      .replace(/```json|```/g, "").trim();
-    try {
-      return JSON.parse(raw);
-    } catch { return tickers.map(() => null); }
-  };
+  // Results come from the nightly GMI Pattern Scan (gmi-morning-brief/pattern-scan.json),
+  // which runs the detectors above on real Polygon daily candles.
+  const SCAN_REPO = "bristleconewealth/gmi-morning-brief";
+  const SCAN_FILE = "pattern-scan.json";
 
   const runScan = useCallback(async () => {
+    if (!ghToken) { setError("Paste your GitHub token first (same token as the other GMI tools)."); return; }
     setScanning(true);
     setError(null);
-    setResults([]);
-    abortRef.current = false;
-
-    const tickers = useCustom
-      ? customTickers.split(/[\s,]+/).map(t => t.trim().toUpperCase()).filter(Boolean)
-      : selectedSectors.size > 0
-        ? [...new Set([...selectedSectors].flatMap(s => SECTORS[s]?.tickers || []))]
-        : ALL_TICKERS;
-
-    setProgress({ done: 0, total: tickers.length, current: "Starting..." });
-
-    const found = [];
-    const BATCH = 25;
-
-    for (let i = 0; i < tickers.length; i += BATCH) {
-      if (abortRef.current) break;
-      const batch = tickers.slice(i, i + BATCH);
-      setProgress({ done: i, total: tickers.length, current: batch.slice(0, 4).join(", ") + "…" });
-
-      try {
-        const batchResults = await analyzeBatch(batch);
-        if (Array.isArray(batchResults)) {
-          batchResults.forEach((r, idx) => {
-            if (!r || !r.ticker || r.score < 45) return;
-            const ticker = r.ticker || batch[idx];
-            const sector = getTickerSector(ticker);
-            const isDB = r.pattern === "Double Bottom";
-            found.push({
-              ...r,
-              ticker,
-              sector,
-              color: isDB ? "#60a5fa" : "#22c55e",
-              bg: isDB ? "#1e3a5f" : "#052e16",
-              candles: null
-            });
-          });
-        }
-      } catch (e) { console.error("Batch failed:", e); }
-
-      setResults([...found].sort((a, b) => b.score - a.score));
-      if (i + BATCH < tickers.length) await new Promise(r => setTimeout(r, 200));
+    setProgress({ done: 0, total: 1, current: "Loading latest scan…" });
+    try {
+      const res = await fetch(`https://api.github.com/repos/${SCAN_REPO}/contents/${SCAN_FILE}`, {
+        headers: { "Authorization": `token ${ghToken}`, "Accept": "application/vnd.github.raw+json" },
+        cache: "no-store"
+      });
+      if (res.status === 401) throw new Error("GitHub rejected the token (expired or mistyped).");
+      if (res.status === 404) throw new Error(`No scan results found. Either the GMI Pattern Scan hasn't run yet (run it once from the Actions tab in ${SCAN_REPO}), or this token can't read that repo.`);
+      if (!res.ok) throw new Error(`Could not load scan results (GitHub ${res.status}).`);
+      const data = await res.json();
+      setScanData(data);
+      const asOf = data.data_date ? `data as of ${data.data_date} close` : "";
+      const ageDays = data.generated_at ? (Date.now() - new Date(data.generated_at).getTime()) / 86400000 : 0;
+      setLastScan(`${asOf}${ageDays > 4 ? " ⚠ stale — check the nightly scan" : ""}`);
+      try { sessionStorage.setItem("gh_token", ghToken); } catch {}
+    } catch (e) {
+      setError(e?.message || "Could not load scan results.");
     }
-
-    setProgress(p => ({ ...p, done: tickers.length, current: "" }));
-    setLastScan(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
+    setProgress({ done: 1, total: 1, current: "" });
     setScanning(false);
-  }, [customTickers, useCustom, selectedSectors]);
+  }, [ghToken]);
+
+  // Auto-load when a token is already saved this session
+  useEffect(() => { if (ghToken) runScan(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Apply sector / watchlist filters to the loaded scan
+  const customList = useCustom ? customTickers.split(/[\s,]+/).map(t => t.trim().toUpperCase()).filter(Boolean) : [];
+  const notInUniverse = customList.filter(t => !ALL_TICKERS.includes(t));
+  const failedSet = new Set((scanData?.failed || []).map(f => f.ticker));
+  useEffect(() => {
+    if (!scanData) { setResults([]); return; }
+    const want = useCustom
+      ? new Set(customList)
+      : selectedSectors.size > 0
+        ? new Set([...selectedSectors].flatMap(sec => SECTORS[sec]?.tickers || []))
+        : null;
+    setResults((scanData.results || [])
+      .filter(r => !want || want.has(r.ticker))
+      .map(r => ({ ...r, sector: getTickerSector(r.ticker) }))
+      .sort((a, b) => b.score - a.score));
+  }, [scanData, useCustom, customTickers, selectedSectors]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const filtered = results
     .filter(r => filter === "All" || r.pattern === filter)
@@ -695,7 +650,7 @@ Tickers: ${tickers.join(", ")}`;
 
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             {lastScan && !scanning && (
-              <span style={{ fontSize: 10, color: "#475569", fontFamily: mono }}>Last scan {lastScan} · {results.length} patterns found</span>
+              <span style={{ fontSize: 10, color: lastScan.includes("stale") ? "#fbbf24" : "#475569", fontFamily: mono }}>{lastScan} · {results.length} patterns found</span>
             )}
             {scanning && (
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -708,7 +663,8 @@ Tickers: ${tickers.join(", ")}`;
               </div>
             )}
             <button
-              onClick={() => { if (scanning) { abortRef.current = true; setScanning(false); } else runScan(); }}
+              onClick={() => { if (!scanning) runScan(); }}
+              disabled={scanning}
               style={{
                 padding: "9px 20px", borderRadius: 8, border: "none", cursor: "pointer",
                 background: scanning ? "#450a0a" : "linear-gradient(135deg,#16a34a,#15803d)",
@@ -718,9 +674,18 @@ Tickers: ${tickers.join(", ")}`;
                 transition: "all 0.2s"
               }}
             >
-              {scanning ? "⬛ Stop" : "▶ Run Scan"}
+              {scanning ? "Loading…" : scanData ? "↻ Reload Scan" : "▶ Load Latest Scan"}
             </button>
           </div>
+        </div>
+
+        {/* GITHUB TOKEN */}
+        <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ fontSize: 10, color: "#64748b", fontFamily: mono, letterSpacing: "0.1em" }}>GITHUB TOKEN</span>
+          <input type="password" value={ghToken}
+            onChange={e => { const v = e.target.value.trim(); setGhToken(v); try { sessionStorage.setItem("gh_token", v); } catch {} }}
+            placeholder="ghp_... (paste once per session)"
+            style={{ flex: 1, maxWidth: 360, background: "#0a1628", border: "1px solid #1e3a5f", color: "#e2e8f0", padding: "6px 12px", borderRadius: 6, fontSize: 12, fontFamily: mono, outline: "none" }} />
         </div>
 
         {/* CUSTOM TICKERS */}
@@ -728,13 +693,13 @@ Tickers: ${tickers.join(", ")}`;
           <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 12, color: "#64748b" }}>
             <input type="checkbox" checked={useCustom} onChange={e => setUseCustom(e.target.checked)}
               style={{ accentColor: "#3b82f6" }} />
-            Custom watchlist instead
+            Only show my watchlist
           </label>
           {useCustom && (
             <input
               value={customTickers}
               onChange={e => setCustomTickers(e.target.value)}
-              placeholder="AAPL, MSFT, NVDA, TSLA ..."
+              placeholder="AAPL, MSFT, NVDA, TSLA ... (must be in the scan universe)"
               style={{ flex: 1, maxWidth: 500, background: "#0a1628", border: "1px solid #1e3a5f", color: "#e2e8f0", padding: "6px 12px", borderRadius: 6, fontSize: 12, fontFamily: mono, outline: "none" }}
             />
           )}
@@ -849,12 +814,27 @@ Tickers: ${tickers.join(", ")}`;
 
       {/* RESULTS */}
       <div style={{ padding: "16px 28px" }}>
+        {error && (
+          <div style={{ marginBottom: 14, padding: "10px 14px", background: "#450a0a", border: "1px solid #ef444440", borderRadius: 8, fontSize: 12, color: "#fca5a5", fontFamily: mono }}>⚠ {error}</div>
+        )}
+        {useCustom && notInUniverse.length > 0 && (
+          <div style={{ marginBottom: 14, padding: "8px 14px", background: "#1c1917", border: "1px solid #fbbf2440", borderRadius: 8, fontSize: 11, color: "#fbbf24", fontFamily: mono }}>
+            Not in the nightly scan list: {notInUniverse.join(", ")}. Add them to SECTORS in pattern_scanner.jsx and pattern-scan.js to include them.
+          </div>
+        )}
+        {useCustom && customList.some(t => failedSet.has(t)) && (
+          <div style={{ marginBottom: 14, padding: "8px 14px", background: "#1c1917", border: "1px solid #fbbf2440", borderRadius: 8, fontSize: 11, color: "#fbbf24", fontFamily: mono }}>
+            No data last scan for: {customList.filter(t => failedSet.has(t)).join(", ")}.
+          </div>
+        )}
         {!scanning && results.length === 0 && (
           <div style={{ textAlign: "center", padding: "80px 0" }}>
             <div style={{ fontSize: 48, marginBottom: 16, opacity: 0.3 }}>◎</div>
-            <div style={{ fontSize: 15, color: "#334155", fontFamily: mono }}>Press Run Scan to begin</div>
+            <div style={{ fontSize: 15, color: "#334155", fontFamily: mono }}>{scanData ? "No patterns match these filters" : "Paste your GitHub token and click Load Latest Scan"}</div>
             <div style={{ fontSize: 12, color: "#1e3a5f", marginTop: 6 }}>
-              Scanning {ALL_TICKERS.length} tickers across S&P 500, Russell 2000 &amp; NASDAQ
+              {scanData
+                ? `${scanData.scanned} of ${scanData.requested} tickers scanned · ${(scanData.results || []).length} patterns in total`
+                : `Nightly scan of ${ALL_TICKERS.length} tickers across S&P 500, Russell 2000 & NASDAQ, using real daily candles`}
             </div>
           </div>
         )}
@@ -862,8 +842,7 @@ Tickers: ${tickers.join(", ")}`;
         {scanning && results.length === 0 && (
           <div style={{ textAlign: "center", padding: "60px 0" }}>
             <div style={{ fontSize: 28, marginBottom: 12, opacity: 0.4, animation: "pulse 1.5s ease-in-out infinite" }}>◎</div>
-            <div style={{ fontSize: 13, color: "#475569", fontFamily: mono, marginBottom: 6 }}>Analyzing {progress.current}</div>
-            <div style={{ fontSize: 11, color: "#1e3a5f" }}>Results will appear as patterns are detected…</div>
+            <div style={{ fontSize: 13, color: "#475569", fontFamily: mono, marginBottom: 6 }}>{progress.current || "Loading…"}</div>
             <style>{`@keyframes pulse { 0%,100%{opacity:0.3} 50%{opacity:0.7} }`}</style>
           </div>
         )}
@@ -905,6 +884,11 @@ Tickers: ${tickers.join(", ")}`;
                     </div>
                   );
                 })()}
+
+                {/* Last 40 days */}
+                {r.candles && r.candles.length >= 10 && (
+                  <div style={{ marginBottom: 8 }}><Sparkline candles={r.candles} pattern={r.pattern} result={r} /></div>
+                )}
 
                 {/* Details */}
                 <div style={{ fontSize: 11, color: "#475569", lineHeight: 1.7, fontFamily: mono, marginBottom: 10, borderTop: "1px solid #0f2040", paddingTop: 8 }}>

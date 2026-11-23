@@ -157,21 +157,36 @@ function UploadModal({ onClose, onApply }) {
   const [dragOver, setDragOver] = useState(false);
   const fileRef = useRef();
   const pasteRef = useRef();
+  const [apiKey, setApiKey] = useState(() => { try { return sessionStorage.getItem("anthropic_key") || ""; } catch { return ""; } });
 
   const analyze = async (messages) => {
+    if (!apiKey) throw new Error("Paste your Anthropic API key at the top of this window first.");
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true"
+      },
       body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 1000,
+        model: "claude-sonnet-5-5",
+        max_tokens: 2000,
         system: SYSTEM_PROMPT,
         messages
       })
     });
-    const data = await res.json();
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const m = data?.error?.message || "";
+      if (res.status === 401) throw new Error("Anthropic rejected the API key — check it was pasted fully (starts with sk-ant-).");
+      if (res.status === 400 && /credit|billing/i.test(m)) throw new Error("Your Anthropic account is out of credits — add some at console.anthropic.com → Billing.");
+      if (res.status === 429) throw new Error("Rate limit or spend limit reached — wait a minute or raise the limit in the console.");
+      throw new Error(`Anthropic API error ${res.status}${m ? ": " + m : ""}`);
+    }
     const raw = (data.content?.find(b => b.type === "text")?.text || "").replace(/```json|```/g, "").trim();
-    return JSON.parse(raw);
+    try { return JSON.parse(raw); }
+    catch { throw new Error("The AI reply wasn't valid data. Try again, or paste the text instead."); }
   };
 
   const handleFile = async (file) => {
@@ -213,7 +228,7 @@ function UploadModal({ onClose, onApply }) {
     } catch (err) {
       console.error(err);
       setPhase("error");
-      setStatusMsg("Could not parse this file. Try a PDF, screenshot (PNG/JPG), or paste text below.");
+      setStatusMsg(err?.message || "Could not parse this file. Try a PDF, screenshot (PNG/JPG), or paste text below.");
     }
   };
 
@@ -228,7 +243,7 @@ function UploadModal({ onClose, onApply }) {
       setPhase("preview");
     } catch (err) {
       setPhase("error");
-      setStatusMsg("Could not parse the text. Make sure it contains macro report content.");
+      setStatusMsg(err?.message || "Could not parse the text. Make sure it contains macro report content.");
     }
   };
 
@@ -259,6 +274,13 @@ function UploadModal({ onClose, onApply }) {
 
         {/* IDLE / ERROR */}
         {(phase === "idle" || phase === "error") && (<>
+          <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
+            <label style={{ fontSize:10, color:"#6b7280", fontFamily:mono, letterSpacing:"0.1em" }}>ANTHROPIC API KEY</label>
+            <input type="password" value={apiKey}
+              onChange={e => { const v = e.target.value.trim(); setApiKey(v); try { sessionStorage.setItem("anthropic_key", v); } catch {} }}
+              placeholder="sk-ant-... (paste once per session)"
+              style={{ background:"#111827", border:"1px solid #374151", color:"#f9fafb", padding:"8px 12px", borderRadius:8, fontSize:12, fontFamily:mono, outline:"none" }} />
+          </div>
           {/* Drop zone */}
           <div
             onClick={() => fileRef.current?.click()}
@@ -477,15 +499,16 @@ function PositionModal({ onClose }) {
     setStatus("Loading config from GitHub...");
     try {
       const res = await fetch(`https://api.github.com/repos/${REPO}/contents/${FILE}`, {
-        headers: { "Authorization": `token ${t || token}` }
+        headers: { "Authorization": `token ${t || token}` }, cache: "no-store"
       });
+      if (!res.ok) throw new Error(res.status === 401 ? "❌ GitHub rejected the token (expired or mistyped)." : `❌ Could not load config (GitHub ${res.status}). Check the token can access ${REPO}.`);
       const data = await res.json();
-      const decoded = JSON.parse(atob(data.content));
+      const decoded = JSON.parse(decodeURIComponent(escape(atob(data.content.replace(/\n/g, "")))));
       setCfg(decoded);
       setSha(data.sha);
       setStatus("");
     } catch(e) {
-      setStatus("❌ Could not load config. Check your token.");
+      setStatus(e?.message?.startsWith("❌") ? e.message : "❌ Could not load config. Check your token.");
     }
     setLoading(false);
   };
@@ -500,13 +523,14 @@ function PositionModal({ onClose }) {
         headers,
         body: JSON.stringify({ message: "Update positions via dashboard", content, sha })
       });
+      if (!res.ok) throw new Error(res.status === 409 || res.status === 422 ? "❌ Config changed on GitHub since it loaded — reload and try again." : res.status === 401 ? "❌ GitHub rejected the token." : `❌ Save failed (GitHub ${res.status}). Token needs Contents read & write.`);
       const data = await res.json();
       setSha(data.content.sha);
       setCfg(newCfg);
       setStatus("✅ Saved! Morning email will reflect this tomorrow.");
       setView("positions");
     } catch(e) {
-      setStatus("❌ Save failed. Check token permissions.");
+      setStatus(e?.message?.startsWith("❌") ? e.message : "❌ Save failed. Check token permissions.");
     }
     setLoading(false);
   };
