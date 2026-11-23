@@ -1,5 +1,38 @@
 import { useState, useRef } from "react";
 
+// ─── SAVED KEYS ───────────────────────────────────────────────────────────────
+// Keys live in this tab's session by default. "Remember on this computer"
+// also keeps them in this browser (localStorage) until unticked.
+const KEY_STORE = {
+  get(name) { try { return localStorage.getItem(name) || sessionStorage.getItem(name) || ""; } catch { return ""; } },
+  remembered(name) { try { return localStorage.getItem("remember_" + name) === "1"; } catch { return false; } },
+  set(name, value) {
+    try {
+      sessionStorage.setItem(name, value);
+      if (localStorage.getItem("remember_" + name) === "1") localStorage.setItem(name, value);
+    } catch {}
+  },
+  setRemember(name, on, value) {
+    try {
+      if (on) { localStorage.setItem("remember_" + name, "1"); localStorage.setItem(name, value || ""); }
+      else { localStorage.removeItem("remember_" + name); localStorage.removeItem(name); }
+    } catch {}
+  },
+};
+
+function RememberBox({ name, value, color = "#64748b" }) {
+  const [on, setOn] = useState(() => KEY_STORE.remembered(name));
+  return (
+    <label title="Keeps this key in this browser on this computer until you untick it"
+      style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, color, cursor: "pointer", marginTop: 5, userSelect: "none" }}>
+      <input type="checkbox" checked={on}
+        onChange={e => { setOn(e.target.checked); KEY_STORE.setRemember(name, e.target.checked, value); }}
+        style={{ accentColor: "#3b82f6", margin: 0 }} />
+      Remember on this computer
+    </label>
+  );
+}
+
 const INITIAL_STATE = {
   season: "Spring",
   seasonPct: 70,
@@ -157,7 +190,7 @@ function UploadModal({ onClose, onApply }) {
   const [dragOver, setDragOver] = useState(false);
   const fileRef = useRef();
   const pasteRef = useRef();
-  const [apiKey, setApiKey] = useState(() => { try { return sessionStorage.getItem("anthropic_key") || ""; } catch { return ""; } });
+  const [apiKey, setApiKey] = useState(() => KEY_STORE.get("anthropic_key"));
 
   const analyze = async (messages) => {
     if (!apiKey) throw new Error("Paste your Anthropic API key at the top of this window first.");
@@ -277,9 +310,10 @@ function UploadModal({ onClose, onApply }) {
           <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
             <label style={{ fontSize:10, color:"#6b7280", fontFamily:mono, letterSpacing:"0.1em" }}>ANTHROPIC API KEY</label>
             <input type="password" value={apiKey}
-              onChange={e => { const v = e.target.value.trim(); setApiKey(v); try { sessionStorage.setItem("anthropic_key", v); } catch {} }}
-              placeholder="sk-ant-... (paste once per session)"
+              onChange={e => { const v = e.target.value.trim(); setApiKey(v); KEY_STORE.set("anthropic_key", v); }}
+              placeholder="sk-ant-..."
               style={{ background:"#111827", border:"1px solid #374151", color:"#f9fafb", padding:"8px 12px", borderRadius:8, fontSize:12, fontFamily:mono, outline:"none" }} />
+            <RememberBox name="anthropic_key" value={apiKey} color="#6b7280" />
           </div>
           {/* Drop zone */}
           <div
@@ -468,8 +502,8 @@ function PositionModal({ onClose }) {
   const REPO = "bristleconewealth/gmi-morning-brief";
   const FILE = "config.json";
 
-  const [token, setToken] = useState(() => sessionStorage.getItem("gh_token") || "");
-  const [tokenSaved, setTokenSaved] = useState(!!sessionStorage.getItem("gh_token"));
+  const [token, setToken] = useState(() => KEY_STORE.get("gh_token"));
+  const [tokenSaved, setTokenSaved] = useState(() => !!KEY_STORE.get("gh_token"));
   const [cfg, setCfg] = useState(null);
   const [sha, setSha] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -489,7 +523,7 @@ function PositionModal({ onClose }) {
   const headers = { "Authorization": `token ${token}`, "Content-Type": "application/json" };
 
   const saveToken = () => {
-    sessionStorage.setItem("gh_token", token);
+    KEY_STORE.set("gh_token", token.trim());
     setTokenSaved(true);
     fetchConfig(token);
   };
@@ -600,8 +634,9 @@ function PositionModal({ onClose }) {
             </div>
             <div>
               <label style={labelStyle}>GITHUB TOKEN</label>
-              <input type="password" value={token} onChange={e=>setToken(e.target.value)}
-                placeholder="ghp_..." style={inputStyle} />
+              <input type="password" value={token} onChange={e=>setToken(e.target.value.trim())}
+                placeholder="github_pat_..." style={inputStyle} />
+              <RememberBox name="gh_token" value={token} color="#6b7280" />
             </div>
             <button onClick={saveToken} style={btnPrimary}>Connect to GitHub</button>
           </div>
@@ -613,6 +648,8 @@ function PositionModal({ onClose }) {
           <div style={{ textAlign:"center", padding:20 }}>
             <button onClick={() => fetchConfig()} style={btnPrimary}>Load Positions</button>
             {status && <div style={{ marginTop:10, fontSize:12, color:"#ef4444" }}>{status}</div>}
+            <button onClick={() => { setTokenSaved(false); setStatus(""); }}
+              style={{ marginTop:12, background:"none", border:"none", color:"#60a5fa", fontSize:12, cursor:"pointer", fontFamily:sans }}>Change token</button>
           </div>
         ) : (
 

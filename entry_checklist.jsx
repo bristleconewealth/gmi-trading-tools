@@ -1,5 +1,38 @@
 import { useState, useEffect } from "react";
 
+// ─── SAVED KEYS ───────────────────────────────────────────────────────────────
+// Keys live in this tab's session by default. "Remember on this computer"
+// also keeps them in this browser (localStorage) until unticked.
+const KEY_STORE = {
+  get(name) { try { return localStorage.getItem(name) || sessionStorage.getItem(name) || ""; } catch { return ""; } },
+  remembered(name) { try { return localStorage.getItem("remember_" + name) === "1"; } catch { return false; } },
+  set(name, value) {
+    try {
+      sessionStorage.setItem(name, value);
+      if (localStorage.getItem("remember_" + name) === "1") localStorage.setItem(name, value);
+    } catch {}
+  },
+  setRemember(name, on, value) {
+    try {
+      if (on) { localStorage.setItem("remember_" + name, "1"); localStorage.setItem(name, value || ""); }
+      else { localStorage.removeItem("remember_" + name); localStorage.removeItem(name); }
+    } catch {}
+  },
+};
+
+function RememberBox({ name, value, color = "#64748b" }) {
+  const [on, setOn] = useState(() => KEY_STORE.remembered(name));
+  return (
+    <label title="Keeps this key in this browser on this computer until you untick it"
+      style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, color, cursor: "pointer", marginTop: 5, userSelect: "none" }}>
+      <input type="checkbox" checked={on}
+        onChange={e => { setOn(e.target.checked); KEY_STORE.setRemember(name, e.target.checked, value); }}
+        style={{ accentColor: "#3b82f6", margin: 0 }} />
+      Remember on this computer
+    </label>
+  );
+}
+
 const APC_DEFAULTS = {
   AVGO:14, CRWD:15, IBIT:25, IONQ:30, MSFT:15, NVDA:18, OKLO:35, PLTR:20,
   RKLB:32, SLV:12, SMR:28, SQQQ:20, TSLA:32, TSM:15, GLD:10, AMZN:12,
@@ -79,8 +112,8 @@ export default function EntryChecklist() {
   const [volumeOk, setVolumeOk]       = useState(null);
   const [atcDay, setAtcDay]           = useState("");
   const [macro, setMacro]             = useState(MACRO_DEFAULT);
-  const [ghToken, setGhToken]         = useState(() => sessionStorage.getItem("gh_token") || "");
-  const [fhKey, setFhKey]             = useState(() => sessionStorage.getItem("finnhub_key") || "");
+  const [ghToken, setGhToken]         = useState(() => KEY_STORE.get("gh_token"));
+  const [fhKey, setFhKey]             = useState(() => KEY_STORE.get("finnhub_key"));
   const [saveStatus, setSaveStatus]   = useState("");
   const [saving, setSaving]           = useState(false);
   const [notes, setNotes]             = useState("");
@@ -176,7 +209,7 @@ export default function EntryChecklist() {
       const put = await fetch(`https://api.github.com/repos/${REPO}/contents/${FILE}`,{method:"PUT",headers:{"Authorization":`token ${ghToken}`,"Content-Type":"application/json"},body:JSON.stringify({message:`Entry: ${sym} @ $${e1Val}`,content,sha:data.sha})});
       if (!put.ok) { setSaveStatus(await ghError(put, "Saving")); setSaving(false); return; }
       setSaveStatus(`✅ ${sym} logged! Morning email updates tonight.`);
-      sessionStorage.setItem("gh_token",ghToken);
+      KEY_STORE.set("gh_token",ghToken);
     } catch { setSaveStatus("❌ Save failed — couldn't reach GitHub. Check your connection."); }
     setSaving(false);
   };
@@ -249,7 +282,8 @@ export default function EntryChecklist() {
               </div>
               <div style={{ marginTop:10 }}>
                 <label style={lbl}>FINNHUB API KEY</label>
-                <input type="password" value={fhKey} onChange={e=>{setFhKey(e.target.value.trim());sessionStorage.setItem("finnhub_key",e.target.value.trim());}} placeholder="Paste once per session" style={inp({fontSize:12})} />
+                <input type="password" value={fhKey} onChange={e=>{setFhKey(e.target.value.trim());KEY_STORE.set("finnhub_key",e.target.value.trim());}} placeholder="Paste your Finnhub key" style={inp({fontSize:12})} />
+                <RememberBox name="finnhub_key" value={fhKey} />
               </div>
             </div>
 
@@ -355,7 +389,7 @@ export default function EntryChecklist() {
             <div style={card}>
               <div style={sec}>Log Trade → GitHub</div>
               <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
-                <div><label style={lbl}>GITHUB TOKEN</label><input type="password" value={ghToken} onChange={e=>{setGhToken(e.target.value);sessionStorage.setItem("gh_token",e.target.value);}} placeholder="ghp_..." style={inp({fontSize:12})} /></div>
+                <div><label style={lbl}>GITHUB TOKEN</label><input type="password" value={ghToken} onChange={e=>{const v=e.target.value.trim();setGhToken(v);KEY_STORE.set("gh_token",v);}} placeholder="github_pat_..." style={inp({fontSize:12})} /><RememberBox name="gh_token" value={ghToken} /></div>
                 <div><label style={lbl}>NOTES</label><input value={notes} onChange={e=>setNotes(e.target.value)} placeholder="E1 entry. Bull pullback." style={inp({fontSize:12,fontFamily:"'DM Sans',sans-serif"})} /></div>
                 <button onClick={saveToGitHub} disabled={saving}
                   style={{ width:"100%", padding:"12px", borderRadius:10, fontSize:14, fontWeight:700, cursor:saving?"wait":"pointer", fontFamily:"'DM Sans',sans-serif", background:allPass?"linear-gradient(135deg,#064e3b,#065f46)":"#0f172a", border:`1px solid ${allPass?"#10b98160":"#334155"}`, color:allPass?"#34d399":"#475569", boxShadow:allPass?"0 0 20px #10b98130":"none" }}>

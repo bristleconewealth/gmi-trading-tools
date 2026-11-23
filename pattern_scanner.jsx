@@ -1,5 +1,38 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 
+// ─── SAVED KEYS ───────────────────────────────────────────────────────────────
+// Keys live in this tab's session by default. "Remember on this computer"
+// also keeps them in this browser (localStorage) until unticked.
+const KEY_STORE = {
+  get(name) { try { return localStorage.getItem(name) || sessionStorage.getItem(name) || ""; } catch { return ""; } },
+  remembered(name) { try { return localStorage.getItem("remember_" + name) === "1"; } catch { return false; } },
+  set(name, value) {
+    try {
+      sessionStorage.setItem(name, value);
+      if (localStorage.getItem("remember_" + name) === "1") localStorage.setItem(name, value);
+    } catch {}
+  },
+  setRemember(name, on, value) {
+    try {
+      if (on) { localStorage.setItem("remember_" + name, "1"); localStorage.setItem(name, value || ""); }
+      else { localStorage.removeItem("remember_" + name); localStorage.removeItem(name); }
+    } catch {}
+  },
+};
+
+function RememberBox({ name, value, color = "#64748b" }) {
+  const [on, setOn] = useState(() => KEY_STORE.remembered(name));
+  return (
+    <label title="Keeps this key in this browser on this computer until you untick it"
+      style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, color, cursor: "pointer", marginTop: 5, userSelect: "none" }}>
+      <input type="checkbox" checked={on}
+        onChange={e => { setOn(e.target.checked); KEY_STORE.setRemember(name, e.target.checked, value); }}
+        style={{ accentColor: "#3b82f6", margin: 0 }} />
+      Remember on this computer
+    </label>
+  );
+}
+
 // ─── SECTOR DEFINITIONS ───────────────────────────────────────────────────────
 const SECTORS = {
   "Technology": {
@@ -567,7 +600,7 @@ export default function PatternScanner() {
   const [macro, setMacro] = useState({ season: "Spring", lateCount: 0, globalLiquidity: "Rising", ism: 51.2 });
 
   const [scanData, setScanData] = useState(null);
-  const [ghToken, setGhToken] = useState(() => { try { return sessionStorage.getItem("gh_token") || ""; } catch { return ""; } });
+  const [ghToken, setGhToken] = useState(() => KEY_STORE.get("gh_token"));
 
   // Results come from the nightly GMI Pattern Scan (gmi-morning-brief/pattern-scan.json),
   // which runs the detectors above on real Polygon daily candles.
@@ -592,7 +625,7 @@ export default function PatternScanner() {
       const asOf = data.data_date ? `data as of ${data.data_date} close` : "";
       const ageDays = data.generated_at ? (Date.now() - new Date(data.generated_at).getTime()) / 86400000 : 0;
       setLastScan(`${asOf}${ageDays > 4 ? " ⚠ stale — check the nightly scan" : ""}`);
-      try { sessionStorage.setItem("gh_token", ghToken); } catch {}
+      KEY_STORE.set("gh_token", ghToken);
     } catch (e) {
       setError(e?.message || "Could not load scan results.");
     }
@@ -683,9 +716,10 @@ export default function PatternScanner() {
         <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 10 }}>
           <span style={{ fontSize: 10, color: "#64748b", fontFamily: mono, letterSpacing: "0.1em" }}>GITHUB TOKEN</span>
           <input type="password" value={ghToken}
-            onChange={e => { const v = e.target.value.trim(); setGhToken(v); try { sessionStorage.setItem("gh_token", v); } catch {} }}
-            placeholder="ghp_... (paste once per session)"
+            onChange={e => { const v = e.target.value.trim(); setGhToken(v); KEY_STORE.set("gh_token", v); }}
+            placeholder="github_pat_..."
             style={{ flex: 1, maxWidth: 360, background: "#0a1628", border: "1px solid #1e3a5f", color: "#e2e8f0", padding: "6px 12px", borderRadius: 6, fontSize: 12, fontFamily: mono, outline: "none" }} />
+          <RememberBox name="gh_token" value={ghToken} />
         </div>
 
         {/* CUSTOM TICKERS */}
